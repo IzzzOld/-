@@ -1,0 +1,240 @@
+from random import randint, choice
+from datetime import datetime, timedelta
+import tkinter as tk
+
+
+class Ship:
+    def __init__(self, name, gruz_type, gruz_weight, des_time, plan_stay):
+        self.name = name
+        self.gruz_type = gruz_type
+        self.gruz_weight = gruz_weight
+        self.des_time = des_time
+        self.plan_stay = plan_stay
+        self.actual_des = None
+        self.start_unloading = None
+        self.unloading_duration = None
+        self.dep_time = None
+        self.wait_time = 0
+
+
+class Kran:
+    def __init__(self, kran_type):
+        self.kran_type = kran_type
+        self.busy = False
+        self.busy_time = None
+
+
+class Port:
+    def __init__(self, kranes, waiting_des, des_variance, unload_variance, simulation_step):
+        self.kranes = kranes
+        self.waiting_des = waiting_des
+        self.des_variance = des_variance
+        self.unload_variance = unload_variance
+        self.simulation_step = simulation_step
+        self.queue_type = {'Сыпучий': [], 'Жидкий': [], 'Контейнер': []}
+        self.unloaded_ships = []
+        self.current_date = min([ship.des_time for ship in waiting_des])
+        self.journal = []
+        self.des_journal = []
+        self.dep_journal = []
+        self.end_simulation = False
+
+    #Добавляет новые суда в список ожидающих прибытия
+    def add_ships(self, new_ships):
+        for ship in new_ships:
+            self.waiting_des.append(ship)
+
+    #Генерирует случайное значение в заданном диапазоне
+    def variance(self, variance_range):
+        return randint(*variance_range)
+
+    #Выполняет один шаг симуляции, обрабатывая прибытие судов, разгрузку и обновление очередей, а также продвигает текущую дату
+    def simulate_step(self):
+        self.process_des()
+        self.process_unloading()
+        self.update_queues()
+        self.current_date += timedelta(days=self.simulation_step)
+
+        # Проверяет завершение симуляции
+        if all(not queue for queue in self.queue_type.values()) and not any(krane.busy for krane_list in self.kranes.values() for krane in krane_list):
+            self.end_simulation = True
+
+    #Обрабатывает прибытие судов, добавляя их в очередь для разгрузки
+    def process_des(self):
+        for ship in self.waiting_des[:]:
+            if ship.actual_des is None:
+                des_variance = self.variance(self.des_variance)
+                ship.actual_des = ship.des_time + timedelta(days=des_variance)
+            if ship.actual_des <= self.current_date:
+                self.queue_type[ship.gruz_type].append(ship)
+                self.des_journal.append((ship.name, ship.actual_des))
+                self.waiting_des.remove(ship)
+
+    #Обрабатывает разгрузку судов, распределяя их к свободным кранам
+    def process_unloading(self):
+        for gruz_type, krane_list in self.kranes.items():
+            for krane in krane_list:
+                if not krane.busy:
+                    if self.queue_type[gruz_type]:
+                        ship = self.queue_type[gruz_type].pop(0)
+                        ship.start_unloading = self.current_date
+                        unload_duration = self.unloading_time(ship)
+                        krane.busy = True
+                        krane.busy_until = self.current_date + timedelta(days=unload_duration)
+                        ship.unloading_duration = unload_duration
+                        # Изменяем время отправки на текущее время
+                        ship.departure_time = self.current_date + timedelta(minutes=randint(0, 59))
+                        ship.wait_time = (ship.start_unloading - ship.actual_des).days
+                        self.journal.append((ship.name, ship.actual_des, ship.wait_time, ship.start_unloading, unload_duration))
+                        self.dep_journal.append((ship.name, ship.departure_time))
+                        self.unloaded_ships.append(ship)
+                elif krane.busy_until and krane.busy_until <= self.current_date:
+                    krane.busy = False
+                    krane.busy_until = None
+
+    #Вычисляет время разгрузки судна с учетом отклонения
+    def unloading_time(self, ship):
+        base_time = ship.gruz_weight // 100
+        variance = self.variance(self.unload_variance)
+        return base_time + variance
+
+    #Обновляет время ожидания для судов в очередях
+    def update_queues(self):
+        for cargo_type, queue in self.queue_type.items():
+            for ship in queue:
+                ship.wait_time += self.simulation_step
+
+    #Вычисляет статистику по завершению симуляции
+    def calculate_statistics(self):
+        number_unloaded_ships = len(self.unloaded_ships)
+        total_wait_time = sum(ship.wait_time for ship in self.unloaded_ships)
+        average_wait_time = total_wait_time / number_unloaded_ships if number_unloaded_ships else 0
+        max_delay = max((ship.wait_time for ship in self.unloaded_ships), default=0)
+        average_delay = total_wait_time / number_unloaded_ships if number_unloaded_ships else 0
+        amount_fine_paid = total_wait_time * 2000
+
+        return {
+            'number_unloaded_ships': number_unloaded_ships,
+            'average_wait_time': average_wait_time,
+            'max_delay': max_delay,
+            'average_delay': average_delay,
+            'amount_fine_paid': amount_fine_paid
+        }
+
+
+class PortSimulationTkinter:
+    def __init__(self, port):
+        self.port = port
+        self.root = tk.Tk()
+        self.root.title("Симуляция Порта")
+
+        self.queue_frame = tk.Frame(self.root)
+        self.queue_frame.pack()
+
+        self.log_frame = tk.Frame(self.root)
+        self.log_frame.pack()
+
+        self.queue_text = tk.Text(self.queue_frame, height=10, width=50)
+        self.queue_text.pack(side=tk.LEFT)
+
+        self.des_journal_text = tk.Text(self.log_frame, height=10, width=50)
+        self.des_journal_text.pack(side=tk.LEFT)
+
+        self.dep_journal_text = tk.Text(self.log_frame, height=10, width=50)
+        self.dep_journal_text.pack(side=tk.LEFT)
+
+        self.journal_text = tk.Text(self.log_frame, height=10, width=100)
+        self.journal_text.pack(side=tk.LEFT)
+
+        self.start_button = tk.Button(self.root, text="Запустить симуляцию", command=self.start_simulation)
+        self.start_button.pack()
+
+    def start_simulation(self):
+        self.start_button.config(state=tk.DISABLED)
+        self.update_visualization()
+
+    def update_visualization(self):
+        self.port.simulate_step()
+
+        self.queue_text.delete(1.0, tk.END)
+        self.des_journal_text.delete(1.0, tk.END)
+        self.dep_journal_text.delete(1.0, tk.END)
+        self.journal_text.delete(1.0, tk.END)
+
+        # Отображение количества кранов каждого типа
+        for krane_type, krane_list in self.port.kranes.items():
+            self.queue_text.insert(tk.END, f"Количество кранов {krane_type}: {len(krane_list)}\n")
+
+        # Отображение очередей у каждого крана
+        for krane_type, queue_type in self.port.queue_type.items():
+            self.queue_text.insert(tk.END, f"Очередь у кранов {krane_type}:\n")
+            for ship in queue_type:
+                self.queue_text.insert(tk.END,
+                                       f"{ship.name} (Прибытие: {ship.actual_des}, Ожидание: {ship.wait_time} дней)\n")
+            self.queue_text.insert(tk.END, "\n")
+
+        # Отображение журнала прибытия и отправки судов
+        self.des_journal_text.insert(tk.END, "Журнал прибытия:\n")
+        for journal in self.port.des_journal:
+            name, actual_des = journal
+            self.des_journal_text.insert(tk.END, f"{name}: Прибытие: {actual_des}\n")
+
+        self.dep_journal_text.insert(tk.END, "Журнал отправки:\n")
+        for journal in self.port.dep_journal:
+            name, dep_time = journal
+            self.dep_journal_text.insert(tk.END, f"{name}: Отправка: {dep_time}\n")
+
+        # Отображение журнала разгрузки
+        self.journal_text.insert(tk.END, "Журнал разгрузки:\n")
+        for journal in self.port.journal:
+            name, actual_des, wait_time, start_unloading, unload_duration = journal
+            self.journal_text.insert(tk.END, f"{name}: Прибытие: {actual_des}, Ожидание: {wait_time} дней, "
+                                         f"Начало разгрузки: {start_unloading}, Продолжительность: {unload_duration} дней\n")
+
+        if self.port.end_simulation and len(self.port.unloaded_ships) >= 10:
+            # По окончании моделирования и если разгружено минимум 5 судов, выводим статистику
+            stats = self.port.calculate_statistics()
+            self.journal_text.insert(tk.END, f"Итоговая статистика:\n")
+            self.journal_text.insert(tk.END, f"Всего разгружено судов: {stats['number_unloaded_ships']}\n")
+            self.journal_text.insert(tk.END, f"Среднее время ожидания: {stats['average_wait_time']:.2f} дней\n")
+            self.journal_text.insert(tk.END, f"Максимальная задержка: {stats['max_delay']:.2f} дней\n")
+            self.journal_text.insert(tk.END, f"Средняя задержка: {stats['average_delay']:.2f} дней\n")
+            self.journal_text.insert(tk.END, f"Общий штраф: {stats['amount_fine_paid']:.2f}\n")
+        else:
+            self.root.after(1000, self.update_visualization)
+
+
+def random_ships(num_ships):
+    ship_names = ["Каравай", "Пират", "Бангладеш", "Марвел", "Человек Паук", "Червонец"]
+    gruz_types = ["Сыпучий", "Жидкий", "Контейнер"]
+    des_time_base = datetime(2024, 6, 1)
+
+    ships = []
+    for i in range(num_ships):
+        name = choice(ship_names) + f" {i}"
+        gruz_type = choice(gruz_types)
+        gruz_weight = randint(100, 2000)
+        # Генерируем случайное время в диапазоне от 8:00 до 20:00
+        des_time = des_time_base + timedelta(days=randint(0, 5), hours=randint(8, 20), minutes=randint(0, 59))
+        plan_stay = randint(1, 5)
+        ships.append(Ship(name, gruz_type, gruz_weight, des_time, plan_stay))
+    return ships
+
+
+def random_kranes():
+    krane_types = ["Сыпучий", "Жидкий", "Контейнер"]
+    kranes = {crane_type: [] for crane_type in krane_types}
+
+    for krane_type in krane_types:
+        num_kranes = randint(1, 3)
+        kranes[krane_type] = [Kran(krane_type) for _ in range(num_kranes)]
+    return kranes
+
+
+des_schedule = random_ships(10)
+kranes = random_kranes()
+
+port = Port(kranes, des_schedule, (-2, 9), (0, 12), 1)
+
+app = PortSimulationTkinter(port)
+app.root.mainloop()
